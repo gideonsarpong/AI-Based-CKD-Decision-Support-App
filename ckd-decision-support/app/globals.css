@@ -1,4 +1,6 @@
-@import "tailwindcss";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 :root {
   --background: #ffffff;
@@ -24,3 +26,45 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+@keyframes pulseGlow {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+
+.bg-animate-glow {
+  animation: pulseGlow 8s ease-in-out infinite;
+}
+/* ---- Kidney pulse glow ---- */
+.kidney-glow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  /* Two soft radial glows roughly where the kidneys sit */
+  background:
+    radial-gradient(35vmin 25vmin at 30% 55%, rgba(255, 84, 84, 0.35), transparent 60%),
+    radial-gradient(35vmin 25vmin at 70% 55%, rgba(84, 160, 255, 0.28), transparent 60%);
+  filter: blur(26px);
+  mix-blend-mode: screen;              /* keeps it subtle over dark areas */
+  animation: kidney-breathe 7s ease-in-out infinite;
+  will-change: transform, opacity, filter;
+}
+
+/* Dark mode: slightly stronger but still subtle */
+:root.dark .kidney-glow {
+  background:
+    radial-gradient(35vmin 25vmin at 30% 55%, rgba(255, 84, 84, 0.45), transparent 60%),
+    radial-gradient(35vmin 25vmin at 70% 55%, rgba(84, 160, 255, 0.35), transparent 60%);
+  filter: blur(30px);
+}
+
+@keyframes kidney-breathe {
+  0%   { transform: scale(0.97); opacity: 0.65; }
+  50%  { transform: scale(1.03); opacity: 1;    }
+  100% { transform: scale(0.97); opacity: 0.65; }
+}
+
+/* Respect reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .kidney-glow { animation: none; opacity: 0.7; }
+}
+

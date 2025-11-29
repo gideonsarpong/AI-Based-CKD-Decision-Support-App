@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>PDF.js Viewer</title>
+
+  <link rel="stylesheet" href="pdf_viewer.css" />
+
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+    }
+    #viewerContainer {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      overflow: auto;
+      background: #ccc;
+    }
+    #toolbar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 50px;
+      background: #222;
+      display: flex;
+      align-items: center;
+      padding: 5px;
+      gap: 10px;
+      color: #fff;
+      z-index: 1000;
+    }
+    #viewer {
+      margin-top: 60px;
+    }
+    button {
+      padding: 5px 10px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div id="toolbar">
+    <button id="prev">Prev</button>
+    <button id="next">Next</button>
+    <span id="page-info"></span>
+    <input id="page-number" type="number" min="1" style="width:60px" />
+    <button id="go">Go</button>
+    <button id="zoom-in">+</button>
+    <button id="zoom-out">-</button>
+  </div>
+
+  <div id="viewerContainer">
+    <div id="viewer" class="pdfViewer"></div>
+  </div>
+
+  <script type="module">
+    import * as pdfjsLib from './pdf_viewer.mjs';
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const file = urlParams.get("file") || "";
+    const hashPage = window.location.hash.replace("#page=", "");
+    let currentPage = parseInt(hashPage || "1", 10);
+    let pdfDoc = null;
+    let scale = 1.2;
+
+    async function loadPDF() {
+      pdfDoc = await pdfjsLib.getDocument(file).promise;
+      document.getElementById("page-info").textContent =
+        `Page ${currentPage} of ${pdfDoc.numPages}`;
+      await renderPage(currentPage);
+    }
+
+    async function renderPage(num) {
+      const viewer = document.getElementById("viewer");
+      viewer.innerHTML = "";
+
+      const page = await pdfDoc.getPage(num);
+      const viewport = page.getViewport({ scale });
+
+      const canvas = document.createElement("canvas");
+      const context = canvas.getContext("2d");
+      canvas.height = viewport.height;
+      canvas.width = viewport.width;
+
+      viewer.appendChild(canvas);
+
+      await page.render({
+        canvasContext: context,
+        viewport: viewport
+      }).promise;
+    }
+
+    document.getElementById("prev").onclick = () => {
+      if (currentPage <= 1) return;
+      currentPage--;
+      renderPage(currentPage);
+    };
+
+    document.getElementById("next").onclick = () => {
+      if (currentPage >= pdfDoc.numPages) return;
+      currentPage++;
+      renderPage(currentPage);
+    };
+
+    document.getElementById("go").onclick = () => {
+      const n = parseInt(document.getElementById("page-number").value, 10);
+      if (n >= 1 && n <= pdfDoc.numPages) {
+        currentPage = n;
+        renderPage(currentPage);
+      }
+    };
+
+    document.getElementById("zoom-in").onclick = () => {
+      scale += 0.2;
+      renderPage(currentPage);
+    };
+
+    document.getElementById("zoom-out").onclick = () => {
+      if (scale <= 0.4) return;
+      scale -= 0.2;
+      renderPage(currentPage);
+    };
+
+    loadPDF();
+  </script>
+
+</body>
+</html>

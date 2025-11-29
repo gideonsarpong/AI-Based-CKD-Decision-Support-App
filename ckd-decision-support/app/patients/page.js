@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { supabase } from '../../lib/supabaseClient';
+import { supabase } from '@/lib/supabaseClient';
+//import { supabase } from '../../lib/supabaseClient';
 
 /*
   CKD Decision Support Form (client-side)
@@ -14,6 +15,7 @@ export default function Page() {
   const [loading, setLoading] = useState(false);
   const [protocols, setProtocols] = useState([]);
   const [form, setForm] = useState({
+    level_of_facility: '',
     age: '',
     egfr: '',
     diabetes: false,
@@ -56,6 +58,7 @@ export default function Page() {
     const ageNum = Number(form.age);
     const egfrNum = Number(form.egfr);
     const ckdStage = determineStage(egfrNum);
+    const selectedleveloffacility = form.level_of_facility;
 
     // DEVELOPMENT: if you want to avoid costs, use a mock response
     if (process.env.NODE_ENV === 'development') {
@@ -89,6 +92,7 @@ export default function Page() {
           Authorization: `Bearer ${accessToken}`, // Server will verify role
         },
         body: JSON.stringify({
+          level_of_facility: selectedleveloffacility,
           age: ageNum,
           egfr: egfrNum,
           diabetes: form.diabetes,
@@ -146,7 +150,7 @@ export default function Page() {
       alert('Saved successfully');
       // optional: clear form / aiOutput
       setAiOutput(null);
-      setForm({ age: '', egfr: '', diabetes: false, hypertension: false, protocol_id: null, patient_identifier: '' });
+      setForm({ level_of_facility: '', age: '', egfr: '', diabetes: false, hypertension: false, protocol_id: null, patient_identifier: '' });
     } catch (err) {
       console.error('Save error', err);
       alert('Failed saving: ' + (err.message || err));
@@ -164,7 +168,23 @@ export default function Page() {
           <label>Patient identifier (optional)</label><br />
           <input value={form.patient_identifier} onChange={(e) => setForm({ ...form, patient_identifier: e.target.value })} style={{ width: '100%', padding: 8 }} placeholder="e.g., MRN or initials" />
         </div>
-
+        <div style={{ margin: '12px 0' }}>
+        <label>Level of Facility</label><br />
+          <select
+            value={form.level_of_facility || ''}
+            onChange={(e) => setForm({ ...form, level_of_facility: e.target.value })}
+            style={{ width: '100%', padding: 8 }}
+            required
+          >
+        <option value=''>-- Select facility level --</option>
+        <option value="CHPS">CHPS</option>
+        <option value="Health Center">Health Center</option>
+        <option value="clinics (without a doctor)">clinics (without a doctor)</option>
+        <option value="Clinics/Polyclinics and Hospitals (with a doctor)">Clinics/Polyclinics and Hospitals (with a doctor)</option>
+        <option value="District hospitals">District hospitals</option>
+        <option value="Regional and tertiary hospitals (Health facility with a Specialist)">Regional and tertiary hospitals (Health facility with a Specialist)</option>
+          </select>
+      </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <div style={{ flex: 1 }}>
             <label>Age</label><br />
