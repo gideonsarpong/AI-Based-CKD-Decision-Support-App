@@ -38,7 +38,7 @@ def status():
         "status": "running",
         "service": "FASTAPI PDF & OCR Processor",
         "version": "1.0.0",
-        "environment": "development",  # remember to change to production after deployment
+        "environment": "deployment",  # remember to change to production after deployment
     }
 
 
