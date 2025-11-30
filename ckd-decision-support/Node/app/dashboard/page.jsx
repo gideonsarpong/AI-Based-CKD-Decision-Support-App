@@ -241,7 +241,7 @@ export default function Dashboard() {
           />
         </label>
 
-        {/* Show only issues */}
+        {/* Show only issues 
         <label className="flex items-center gap-2 text-sm text-gray-700 ml-2">
           <input
             type="checkbox"
@@ -250,7 +250,7 @@ export default function Dashboard() {
             className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
           />
           Show only flagged issues
-        </label>
+        </label>*/}
       </div>
 
       {/* Table */}
@@ -266,7 +266,6 @@ export default function Dashboard() {
                 'Recommendation',
                 'Investigations',
                 'Treatment',
-                'Validation',
                 'Details',
               ].map((h) => (
                 <th key={h} className="px-3 py-2 border-b border-gray-200">

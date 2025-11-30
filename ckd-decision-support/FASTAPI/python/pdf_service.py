@@ -17,6 +17,32 @@ app.add_middleware(
 )
 
 # -----------------------------------------------------------------------
+# **/health and /status routes**
+# -----------------------------------------------------------------------
+@app.get("/health")
+def health():
+    """
+    Lightweight endpoint used for uptime checks.
+    Returns 200 OK if the application is running.
+    """
+    return {"status": "ok"}
+
+
+@app.get("/status")
+def status():
+    """
+    Returns useful runtime info for debugging and monitoring.
+    Does not run OCR or heavy operations.
+    """
+    return {
+        "status": "running",
+        "service": "FASTAPI PDF & OCR Processor",
+        "version": "1.0.0",
+        "environment": "development",  # remember to change to production after deployment
+    }
+
+
+# -----------------------------------------------------------------------
 # **Single-run PDF → image conversion (optimized)**
 # -----------------------------------------------------------------------
 def convert_pdf_to_images(pdf_path: str, dpi: int = 200):

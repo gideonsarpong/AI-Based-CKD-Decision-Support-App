@@ -1,4 +1,4 @@
-// app/page.jsx
+// app/patientform/page.jsx
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
@@ -45,16 +45,24 @@ export default function CKDPage() {
   const { determineStage } = useCKDStage();
 
   // session token load
-  useEffect(() => {
-    (async () => {
-      try {
-        const { data: sessionData } = await supabase.auth.getSession();
-        setToken(sessionData?.session?.access_token ?? null);
-      } catch (err) {
-        console.error('Failed to load token:', err);
+useEffect(() => {
+  (async () => {
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData?.session?.access_token ?? null;
+
+      setToken(accessToken);
+
+      // If NOT logged in → redirect to /login
+      if (!accessToken) {
+        window.location.href = "/login";
       }
-    })();
-  }, []);
+    } catch (err) {
+      console.error("Failed to load token:", err);
+    }
+  })();
+}, []);
+
 
   // theme
   const [theme, setTheme] = useState(() =>
