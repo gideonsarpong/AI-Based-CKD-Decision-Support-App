@@ -67,7 +67,7 @@ venv/
 #   Sensitive Documents
 # ================================
 # Prevent committing clinical docs again
-*.pdf
+
 *.ppt
 *.pptx
 *.docx
