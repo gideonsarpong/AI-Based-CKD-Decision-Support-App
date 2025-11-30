@@ -44,12 +44,13 @@ export default function ViewerClient() {
     [router]
   );
 
-  // Handle AI citation jumps (?cite=)
+  // ✅ FIXED: Handle AI citation jumps (?cite=)
+  // Must defer setState to avoid "cascading renders" error
   useEffect(() => {
     if (citeParam) {
       const citedPage = parseInt(citeParam);
       if (!isNaN(citedPage)) {
-        setPage(citedPage);
+        queueMicrotask(() => setPage(citedPage)); // ✓ safe update
         router.replace(`/viewer?p=${citedPage}`);
       }
     }
