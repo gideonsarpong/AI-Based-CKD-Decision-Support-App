@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
-import { Toaster, toast } from 'react-hot-toast';
+import { toast } from 'react-hot-toast';
 import LoadingOverlay from '@/components/ui/LoadingOverlay';
 import { motion } from "framer-motion";
 
@@ -17,15 +17,11 @@ export default function LoginPage() {
   const [checkingSession, setCheckingSession] = useState(true);
   const [errors, setErrors] = useState({ email: '', password: '' });
 
-  // Prevents duplicate initial toasts
-  useEffect(() => toast.dismiss(), []);
-
-  // Check session (no flicker + no duplicate redirect)
+  // Check session once on load (prevents flicker + duplicate login toast)
   useEffect(() => {
     const checkSession = async () => {
       const { data } = await supabase.auth.getSession();
 
-      // Already logged in → redirect once
       if (data?.session) {
         router.replace('/patientform');
         return;
@@ -37,7 +33,7 @@ export default function LoginPage() {
     checkSession();
   }, [router]);
 
-  // Prevent UI flash
+  // Prevent UI flash while checking session
   if (checkingSession) return null;
 
   // Validation
@@ -52,6 +48,7 @@ export default function LoginPage() {
       newErrors.email = 'Enter a valid email address.';
       valid = false;
     }
+
     if (!password.trim()) {
       newErrors.password = 'Password is required.';
       valid = false;
@@ -61,45 +58,52 @@ export default function LoginPage() {
     return valid;
   };
 
-  // Login
+  // Login handler
   async function handleLogin(e) {
     e.preventDefault();
     if (!validateForm()) return;
 
     setLoading(true);
-    toast.dismiss();
 
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
 
     if (error) {
-      toast.error('Login failed: ' + error.message);
+      toast.error('Login failed: ' + error.message, { id: 'login-error' });
       setLoading(false);
       return;
     }
 
-    toast.success('Login successful!');
+    toast.success('Login successful!', { id: 'login-success' });
+
+    // Allow toast to show briefly before redirecting
     setTimeout(() => router.replace('/patientform'), 900);
   }
 
-  // Signup
+  // Signup handler
   async function handleSignup() {
     if (!validateForm()) return;
 
     setLoading(true);
-    toast.dismiss();
 
     const { data, error } = await supabase.auth.signUp({ email, password });
 
     if (error) {
-      toast.error('Signup failed: ' + error.message);
+      toast.error('Signup failed: ' + error.message, { id: 'signup-error' });
       setLoading(false);
       return;
     }
 
     if (!data.user.confirmed_at) {
-      toast.success('Account created! Please verify your email.');
+      toast.success('Account created! Please verify your email.', {
+        id: 'signup-success',
+      });
     } else {
-      toast.success('Account created successfully!');
+      toast.success('Account created successfully!', {
+        id: 'signup-success',
+      });
       setTimeout(() => router.replace('/patientform'), 900);
     }
 
@@ -108,8 +112,8 @@ export default function LoginPage() {
 
   // Reset password
   async function handlePasswordReset() {
-    if (!email) {
-      toast.error('Enter your email to reset password.');
+    if (!email.trim()) {
+      toast.error('Enter your email to reset password.', { id: 'reset-error' });
       return;
     }
 
@@ -119,8 +123,11 @@ export default function LoginPage() {
       redirectTo: `${window.location.origin}/reset-password`,
     });
 
-    if (error) toast.error('Reset failed: ' + error.message);
-    else toast.success('Reset link sent.');
+    if (error) {
+      toast.error('Reset failed: ' + error.message, { id: 'reset-error' });
+    } else {
+      toast.success('Reset link sent.', { id: 'reset-success' });
+    }
 
     setLoading(false);
   }
@@ -134,7 +141,7 @@ export default function LoginPage() {
         filter: "brightness(1.1) contrast(1.1)",
       }}
     >
-      <Toaster />
+
       <LoadingOverlay show={loading} message="Authenticating..." />
 
       {/* Header */}
