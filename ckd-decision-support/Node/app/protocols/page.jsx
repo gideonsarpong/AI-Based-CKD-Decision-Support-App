@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { Toaster, toast } from 'react-hot-toast';
 import Link from "next/link";
@@ -17,6 +17,7 @@ export default function ProtocolsPage() {
   const [protocols, setProtocols] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [loading, setLoading] = useState(false);
   const [selectedSummary, setSelectedSummary] = useState(null);
   const [selectedProtocol, setSelectedProtocol] = useState(null);
@@ -24,10 +25,10 @@ export default function ProtocolsPage() {
   // Delete modal state
   const [showConfirm, setShowConfirm] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
-  const [loadingDelete, setLoadingDelete] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
 
   // --- CONSTANTS ---
-  const MAX_FILES = 3;
+  const MAX_FILES = 1;
   const MAX_FILE_SIZE_MB = 50;
 
   // --- Helpers (client-side sanitizers for display/search only) ---
@@ -40,13 +41,19 @@ export default function ProtocolsPage() {
     return base.slice(0, maxLen) || "untitled";
   }
 
+  // Debounced search
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(searchQuery), 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
   /** Fetch protocols from DB (not storage) for PHI-safe listing */
   const refreshProtocols = useCallback(async () => {
     setLoading(true);
     try {
       const { data, error } = await supabase
         .from('protocols')
-        .select('id, name, original_filename, uploaded_at, chunks_count')
+        .select('id, name, original_filename, uploaded_at, chunks_count, storage_key')
         .order('uploaded_at', { ascending: false });
 
       if (error) {
@@ -60,7 +67,7 @@ export default function ProtocolsPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, []); 
 
   useEffect(() => {
     refreshProtocols();
@@ -76,12 +83,12 @@ export default function ProtocolsPage() {
       return;
     }
 
+    //  Validate all files before starting any uploads
     for (const file of uploaded) {
       if (file.size / 1024 / 1024 > MAX_FILE_SIZE_MB) {
         toast.error(`"${file.name}" exceeds ${MAX_FILE_SIZE_MB} MB.`);
         return;
       }
-      // strict mode: accept PDF only
       if (!file.name.toLowerCase().endsWith('.pdf')) {
         toast.error(`Only PDF files are accepted: ${file.name}`);
         return;
@@ -90,40 +97,41 @@ export default function ProtocolsPage() {
 
     setUploading(true);
 
-    for (const file of uploaded) {
-      // Build FormData and send to backend
-      const form = new FormData();
-      form.append("file", file);
+    try {
+      // Process uploads sequentially with better error handling
+      for (const file of uploaded) {
+        const form = new FormData();
+        form.append("file", file);
+        const safeBase = sanitizeBaseName(file.name);
 
-      // show toast with safe base name
-      const safeBase = sanitizeBaseName(file.name);
-
-      toast.loading(`Uploading & summarizing ${safeBase}...`, { id: safeBase });
-
-      try {
-        const res = await fetch("/api/protocols/summarize", {
-          method: "POST",
-          body: form,
-        });
-
-        const json = await res.json();
-        if (!res.ok) {
-          throw new Error(json?.error || "Upload failed");
-        }
-
-        toast.success(`✅ ${safeBase} uploaded & summarized.`);
-      } catch (err) {
-        console.error("Upload error:", err);
-        toast.error(`⚠️ Error with ${file.name}: ${err.message}`);
-      } finally {
-        toast.dismiss(safeBase);
+        // Use toast.promise for cleaner UX
+        await toast.promise(
+          fetch("/api/protocols/summarize", {
+            method: "POST",
+            body: form,
+          }).then(async (res) => {
+            const json = await res.json();
+            if (!res.ok) {
+              throw new Error(json?.error || "Upload failed");
+            }
+            return json;
+          }),
+          {
+            loading: `Uploading & summarizing ${safeBase}...`,
+            success: `✅ ${safeBase} uploaded & summarized`,
+            error: (err) => `⚠️ Error with ${safeBase}: ${err.message}`,
+          }
+        );
       }
-    }
 
-    await refreshProtocols();
-    setUploading(false);
-    // clear file input value if desired
-    if (e.target) e.target.value = "";
+      await refreshProtocols();
+    } catch (err) {
+      console.error("Upload error:", err);
+    } finally {
+      setUploading(false);
+      // Always clear file input
+      if (e.target) e.target.value = "";
+    }
   };
 
   /** Trigger delete confirmation modal */
@@ -135,7 +143,7 @@ export default function ProtocolsPage() {
   /** Execute delete via backend route (server-side deletion) */
   const handleDelete = async () => {
     if (!pendingDelete) return;
-    setLoadingDelete(true);
+    setDeletingId(pendingDelete.id);
 
     try {
       const res = await fetch("/api/protocols/summarize", {
@@ -155,7 +163,7 @@ export default function ProtocolsPage() {
       console.error("Delete error:", err);
       toast.error(`Delete failed: ${err.message}`);
     } finally {
-      setLoadingDelete(false);
+      setDeletingId(null);
       setShowConfirm(false);
       setPendingDelete(null);
     }
@@ -164,7 +172,6 @@ export default function ProtocolsPage() {
   /** View summary modal using data in DB row (protocols table) */
   const handleViewSummary = async (protocol) => {
     try {
-      // We already have file_url in the protocols row (signed URL). If expired, the backend can re-create on request (not implemented here).
       const { data, error } = await supabase
         .from('protocols')
         .select('protocol_summaries, uploaded_at, name, sections, chunks_count')
@@ -190,35 +197,23 @@ export default function ProtocolsPage() {
       });
 
       setSelectedSummary(data.protocol_summaries);
-      toast.success(`✅ Summary loaded for ${protocol.name || protocol.original_filename}`);
+      toast.success(`Summary loaded for ${protocol.name || protocol.original_filename}`);
     } catch (err) {
       console.error('Fetch summary error:', err);
       toast.error('Error loading summary.');
     }
   };
 
-  /** Open file (signed URL) in new tab; file_url is stored in DB row by backend 
-  const handleViewFile = async (protocol) => {
-    try {
-      if (!protocol.file_url) {
-        toast.error("File URL unavailable. It may have expired.");
-        return;
-      }
-      window.open(protocol.file_url, "_blank");
-    } catch (err) {
-      console.error("Open file error:", err);
-      toast.error("Could not open file.");
-    }
-  };*/
-
-  /** Search filtering */
-  const filtered = protocols.filter((p) => {
-    const q = searchQuery.toLowerCase();
-    return (
+  /** Memoized search filtering using debounced value */
+  const filtered = useMemo(() => {
+    if (!debouncedSearch) return protocols;
+    
+    const q = debouncedSearch.toLowerCase();
+    return protocols.filter((p) => 
       (p.name || "").toLowerCase().includes(q) ||
       (p.original_filename || "").toLowerCase().includes(q)
     );
-  });
+  }, [protocols, debouncedSearch]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 via-white to-blue-50 flex justify-center py-10 relative">
@@ -292,7 +287,7 @@ export default function ProtocolsPage() {
         <div className="space-y-2">
           {filtered.length === 0 && !loading && (
             <p className="text-center text-gray-500 text-sm mt-4">
-              No protocols uploaded yet. Start by uploading your first protocol above.
+              {searchQuery ? "No protocols match your search." : "No protocols uploaded yet. Start by uploading your first protocol above."}
             </p>
           )}
 
@@ -302,38 +297,33 @@ export default function ProtocolsPage() {
               className="flex justify-between items-center bg-gray-50 hover:bg-gray-100 transition border px-3 py-2 rounded-lg"
             >
               <span className="truncate text-gray-700">
-                {/* {(p.name || p.original_filename) + (p.original_filename ? ` (${p.original_filename})` : "")} */}
                 {(p.name || p.original_filename)?.replace(/\s*\(.*?\)/, "")}
               </span>
 
               <div className="flex items-center gap-3">
-                {/*<button
-                  onClick={() => handleViewFile(p)}
-                  className="text-blue-600 hover:text-blue-800 text-sm"
-                >
-                  View File
-                </button>*/}
                 <Link
                   href={`${process.env.NEXT_PUBLIC_APP_URL}/viewer?p=${p.page_number || 1}`}
                   target="_blank"
-                  className="text-blue-600 hover:text-blue-800 text-sm"
+                  className="text-blue-600 hover:text-blue-800 text-sm whitespace-nowrap"
                 >
                   View File
                 </Link>
 
-
                 <button
                   onClick={() => handleViewSummary(p)}
-                  className="text-green-600 hover:text-green-800 text-sm"
+                  className="text-green-600 hover:text-green-800 text-sm whitespace-nowrap"
                 >
                   View Summary
                 </button>
 
                 <button
                   onClick={() => confirmDelete(p)}
-                  className="text-red-600 hover:text-red-800 text-sm"
+                  disabled={deletingId === p.id}
+                  className={`text-red-600 hover:text-red-800 text-sm whitespace-nowrap ${
+                    deletingId === p.id ? 'opacity-50 cursor-not-allowed' : ''
+                  }`}
                 >
-                  Delete
+                  {deletingId === p.id ? 'Deleting...' : 'Delete'}
                 </button>
               </div>
             </div>
@@ -359,18 +349,19 @@ export default function ProtocolsPage() {
                   setShowConfirm(false);
                   setPendingDelete(null);
                 }}
-                className="px-4 py-2 rounded-lg border dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition"
+                disabled={deletingId}
+                className="px-4 py-2 rounded-lg border dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
                 onClick={handleDelete}
-                disabled={loadingDelete}
+                disabled={deletingId}
                 className={`px-4 py-2 rounded-lg bg-red-600 text-white hover:bg-red-700 transition ${
-                  loadingDelete ? 'opacity-70 cursor-not-allowed' : ''
+                  deletingId ? 'opacity-70 cursor-not-allowed' : ''
                 }`}
               >
-                {loadingDelete ? 'Deleting...' : 'Delete'}
+                {deletingId ? 'Deleting...' : 'Delete'}
               </button>
             </div>
           </div>
@@ -380,7 +371,7 @@ export default function ProtocolsPage() {
       {/* Summary Modal */}
       {selectedSummary && (
         <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50 z-50 px-4">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl p-6 relative">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl p-6 relative max-h-[90vh] overflow-hidden flex flex-col">
             <h2 className="text-2xl font-bold text-gray-800 mb-2">
               {selectedProtocol?.name}
             </h2>
@@ -391,7 +382,7 @@ export default function ProtocolsPage() {
               Text Chunks: {selectedProtocol?.chunks_count ?? "N/A"}
             </p>
 
-            <div className="max-h-96 overflow-y-auto border rounded-md p-4 bg-gray-50 text-gray-700 whitespace-pre-line">
+            <div className="flex-1 overflow-y-auto border rounded-md p-4 bg-gray-50 text-gray-700 whitespace-pre-line">
               {selectedSummary}
             </div>
 
@@ -401,6 +392,7 @@ export default function ProtocolsPage() {
                 setSelectedProtocol(null);
               }}
               className="absolute top-3 right-4 text-gray-500 hover:text-gray-800 text-xl font-bold"
+              aria-label="Close modal"
             >
               ×
             </button>

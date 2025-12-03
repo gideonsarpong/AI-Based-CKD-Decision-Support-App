@@ -1,13 +1,11 @@
 /**
- * Fully Corrected AI Recommendation Route (with Citation Links)
- * ---------------------------------------------------------------
- * This version ensures:
+ * AI Recommendation Route — Cleaned & Production-Ready
+ * -----------------------------------------------------
  * - STRICT JSON output
- * - Evidence entries include:
- *      section_title, page_number, excerpt, link
- * - link = `${NEXT_PUBLIC_APP_URL}/viewer?p=${page_number}`
+ * - Correct citation link format
  * - Never invents page numbers
- * - Compatible with your protocol_chunks, sections, embeddings workflow
+ * - All duplicated / stray code removed
+ * - Section embeddings stored using Option A Upsert
  */
 
 import { NextResponse } from "next/server";
@@ -20,8 +18,7 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
-
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL; // 👈 CITATION BASE URL
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL;
 
 const supabaseServer = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
 
@@ -59,36 +56,51 @@ function norm(a) {
 
 function cosine(a, b) {
   if (!a || !b) return 0;
-  const na = norm(a), nb = norm(b);
+  const na = norm(a),
+    nb = norm(b);
   if (na === 0 || nb === 0) return 0;
   return dot(a, b) / (na * nb);
 }
 
-/* -------------------- Embedding Generation -------------------- */
+/* -------------------- Embedding Generator -------------------- */
 async function embeddingFromText(text) {
-  if (!text || !text.trim()) return null;
+  if (!text) return null;
+
+  let str = text;
+  if (typeof text !== "string") {
+    if (text?.title) str = String(text.title);
+    else str = String(text);
+  }
+
+  if (!str.trim()) return null;
+
   try {
     const resp = await openai.embeddings.create({
       model: EMBEDDING_MODEL,
-      input: text,
+      input: str,
     });
     return resp?.data?.[0]?.embedding ?? null;
   } catch (err) {
-    console.error("Embedding generation error:", err);
+    console.error("Embedding error:", err);
     return null;
   }
 }
 
-/* -------------------- Normalize chunks -------------------- */
-function normalizeChunks(rawChunks) {
-  if (!Array.isArray(rawChunks)) return [];
-  return rawChunks.map((c, idx) => {
+/* -------------------- Chunk Normalizer -------------------- */
+function normalizeChunks(raw) {
+  if (!Array.isArray(raw)) return [];
+
+  return raw.map((c, idx) => {
     const content = (c.content ?? c.chunk_text ?? "") || "";
     const section_title = c.section_title || c.section || `Section ${idx + 1}`;
-    const page_number = Number.isInteger(c.page_number) ? c.page_number : (c.page || null);
+    const page_number = Number.isInteger(c.page_number)
+      ? c.page_number
+      : c.page || null;
 
     const cleaned = String(content).replace(/\s+/g, " ").trim();
-    const content_excerpt = cleaned.slice(0, CHUNK_EXCERPT_CHARS) + (cleaned.length > CHUNK_EXCERPT_CHARS ? "..." : "");
+    const content_excerpt =
+      cleaned.slice(0, CHUNK_EXCERPT_CHARS) +
+      (cleaned.length > CHUNK_EXCERPT_CHARS ? "..." : "");
 
     return {
       id: c.id || null,
@@ -106,19 +118,26 @@ function normalizeChunks(rawChunks) {
 
 /* -------------------- Context Joiner -------------------- */
 function joinRetrievedContext(sections, maxChars = 2500) {
-  if (!Array.isArray(sections) || sections.length === 0) return "No retrieved context found.";
-  let out = "";
+  if (!Array.isArray(sections) || sections.length === 0)
+    return "No retrieved context found.";
+
+  let output = "";
   for (const s of sections) {
-    const block = `${s.section_title}${s.page_number ? ` (p.${s.page_number})` : ""}\n${s.content_excerpt}\n\n`;
-    if (out.length + block.length > maxChars) break;
-    out += block;
+    const block = `${s.section_title}${
+      s.page_number ? ` (p.${s.page_number})` : ""
+    }\n${s.content_excerpt}\n\n`;
+
+    if (output.length + block.length > maxChars) break;
+    output += block;
   }
-  return out.trim() || "No retrieved context found.";
+
+  return output.trim() || "No retrieved context found.";
 }
 
-/* -------------------- Section Loading -------------------- */
+/* -------------------- Load Sections -------------------- */
 async function loadProtocolSections(protocolId) {
   if (!protocolId) return [];
+
   try {
     const { data, error } = await supabaseServer
       .from("protocols")
@@ -126,97 +145,112 @@ async function loadProtocolSections(protocolId) {
       .eq("id", protocolId)
       .maybeSingle();
 
-    if (error) {
-      console.warn("loadProtocolSections error:", error);
-      return [];
-    }
+    if (error) return [];
 
     const sections = data?.sections || [];
-    const sectionEmb = data?.section_embeddings || null;
+    const sectionEmb = data?.section_embeddings || [];
 
-    if (Array.isArray(sectionEmb) && sectionEmb.length > 0 && sectionEmb[0]?.embedding) {
-      return sectionEmb.map((s) => ({ title: s.title, embedding: s.embedding }));
+    const normalized = sections.map((s) => {
+      if (typeof s === "string") return { title: s, embedding: null };
+      if (s?.title) return { title: s.title, embedding: s.embedding || null };
+      return { title: String(s), embedding: null };
+    });
+
+    if (
+      Array.isArray(sectionEmb) &&
+      sectionEmb.length > 0 &&
+      sectionEmb[0]?.embedding
+    ) {
+      return sectionEmb.map((s) => ({
+        title: String(s.title || ""),
+        embedding: s.embedding,
+      }));
     }
 
-    if (Array.isArray(sectionEmb) && sections.length === sectionEmb.length) {
-      return sections.map((t, i) => ({ title: t, embedding: sectionEmb[i] }));
+    if (sectionEmb.length === normalized.length) {
+      return normalized.map((s, i) => ({
+        title: s.title,
+        embedding: sectionEmb[i],
+      }));
     }
 
-    return sections.map((t) => ({ title: t, embedding: null }));
-  } catch (err) {
-    console.warn("Failed to load protocol sections:", err?.message || err);
+    return normalized;
+  } catch {
     return [];
   }
 }
 
-/* -------------------- Persist Section Embeddings -------------------- */
-async function persistSectionEmbeddings(protocolId, sectionsWithEmbeddings) {
-  if (!protocolId || !Array.isArray(sectionsWithEmbeddings) || sectionsWithEmbeddings.length === 0) return;
+/* -------------------- Persist Section Embeddings (Option A) -------------------- */
+async function persistSectionEmbeddings(protocolId, updated) {
+  if (!protocolId || !Array.isArray(updated)) return;
+
   try {
     await supabaseServer
       .from("protocols")
-      .update({ section_embeddings: sectionsWithEmbeddings })
+      .update({
+        section_embeddings: updated,
+        updated_at: new Date().toISOString(),
+      })
       .eq("id", protocolId);
   } catch (err) {
-    console.warn("persistSectionEmbeddings failed:", err?.message || err);
+    console.warn("Failed to persist section embeddings:", err);
   }
 }
 
-/* -------------------- Boost by Section -------------------- */
-async function boostChunksBySection(queryEmbedding, retrieved, protocolSections = []) {
-  if (!queryEmbedding || !Array.isArray(retrieved) || retrieved.length === 0)
+/* -------------------- Boost Ranking -------------------- */
+async function boostChunksBySection(queryEmb, retrieved, protocolSections) {
+  if (!queryEmb || !Array.isArray(retrieved) || retrieved.length === 0)
     return retrieved.slice(0, MAX_CONTEXT_CHUNKS);
 
-  const sections = (protocolSections || []).map((s) => ({ title: s.title, embedding: s.embedding }));
-  const hasSectionEmbeddings = sections.some((s) => Array.isArray(s.embedding));
+  const sections = (protocolSections || []).map((s) => ({
+    title: s.title,
+    embedding: s.embedding,
+  }));
+  const hasSectionEmb = sections.some((s) => Array.isArray(s.embedding));
 
   const scored = await Promise.all(
     retrieved.map(async (r) => {
       let chunkEmb = r.embedding;
-
       if (!chunkEmb) {
         try {
-          chunkEmb = await embeddingFromText(r.content_excerpt || (r.content || "").slice(0, 300));
+          chunkEmb = await embeddingFromText(
+            r.content_excerpt || r.content.slice(0, 300)
+          );
         } catch {
           chunkEmb = null;
         }
       }
 
-      const contentScore = chunkEmb ? cosine(queryEmbedding, chunkEmb) : 0;
+      const contentScore = chunkEmb ? cosine(queryEmb, chunkEmb) : 0;
 
       let sectionScore = 0;
-      if (hasSectionEmbeddings && r.section_title) {
+      if (hasSectionEmb && r.section_title) {
         const match = sections.find(
-          (s) => (s.title || "").toLowerCase() === (r.section_title || "").toLowerCase()
+          (s) =>
+            (s.title || "").toLowerCase() ===
+            (r.section_title || "").toLowerCase()
         );
         if (match?.embedding) {
-          sectionScore = cosine(queryEmbedding, match.embedding);
+          sectionScore = cosine(queryEmb, match.embedding);
         } else {
           sectionScore = sections.reduce((acc, s) => {
             if (!s.embedding) return acc;
-            const c = cosine(queryEmbedding, s.embedding);
+            const c = cosine(queryEmb, s.embedding);
             return c > acc ? c : acc;
           }, 0);
         }
       }
 
-      const boosted = contentScore + SECTION_WEIGHT * sectionScore;
-
       return {
         ...r,
         _content_score: contentScore,
         _section_score: sectionScore,
-        _boosted_score: boosted,
+        _boosted_score: contentScore + SECTION_WEIGHT * sectionScore,
       };
     })
   );
 
-  scored.sort((a, b) => {
-    const diff = b._boosted_score - a._boosted_score;
-    if (Math.abs(diff) > 1e-6) return diff;
-    return (b._content_score || 0) - (a._content_score || 0);
-  });
-
+  scored.sort((a, b) => b._boosted_score - a._boosted_score);
   return scored.slice(0, MAX_CONTEXT_CHUNKS);
 }
 
@@ -225,48 +259,58 @@ function extractJSONFromText(raw) {
   if (!raw) return null;
   try {
     return JSON.parse(raw);
-  } catch (e) {
-    const match = raw.match(/\{[\s\S]*\}/);
-    if (match) {
+  } catch {
+    const m = raw.match(/\{[\s\S]*\}/);
+    if (m) {
       try {
-        return JSON.parse(match[0]);
+        return JSON.parse(m[0]);
       } catch {}
     }
   }
   return null;
 }
 
-/* -------------------- MAIN ROUTE -------------------- */
+/* ========================================================================== */
+/*                                MAIN ROUTE                                  */
+/* ========================================================================== */
+
 export async function POST(req) {
-  const startTime = Date.now();
+  const start = Date.now();
 
   try {
     /* -------------------- Auth -------------------- */
-    const authHeader = req.headers.get("authorization") || "";
-    const token = authHeader.replace("Bearer ", "").trim();
+    const token = (req.headers.get("authorization") || "")
+      .replace("Bearer ", "")
+      .trim();
     if (!token) {
-      return NextResponse.json({ error: "Missing Authorization header" }, { status: 401 });
+      return NextResponse.json(
+        { error: "Missing Authorization header" },
+        { status: 401 }
+      );
     }
 
-    const supabaseUserClient = createSupabaseUserClient(token);
-    const { data: userResp, error: userErr } = await supabaseUserClient.auth.getUser();
-    if (userErr || !userResp?.user) {
-      return NextResponse.json({ error: "Invalid session token" }, { status: 401 });
+    const supabaseUser = createSupabaseUserClient(token);
+    const { data: userResp } = await supabaseUser.auth.getUser();
+    if (!userResp?.user) {
+      return NextResponse.json(
+        { error: "Invalid session token" },
+        { status: 401 }
+      );
     }
     const user = userResp.user;
 
     /* -------------------- Role Check -------------------- */
-    const { data: profile, error: profileErr } = await supabaseServer
+    const { data: profile } = await supabaseServer
       .from("profiles")
       .select("role, full_name")
       .eq("id", user.id)
       .single();
 
-    if (profileErr || !profile || !["clinician", "admin"].includes(profile.role)) {
+    if (!profile || !["clinician", "admin"].includes(profile.role)) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
 
-    /* -------------------- Parse Body -------------------- */
+    /* -------------------- Parse body -------------------- */
     const body = await req.json();
     const {
       age,
@@ -286,35 +330,39 @@ export async function POST(req) {
     }
 
     /* -------------------- Fetch Protocol -------------------- */
-    let protocolSummary = "";
     let protocol = null;
+    let protocolSummary = "";
 
-    try {
-      if (protocol_id) {
-        const { data } = await supabaseServer
-          .from("protocols")
-          .select("id, name, version, protocol_summaries, sections, section_embeddings")
-          .eq("id", protocol_id)
-          .maybeSingle();
-        protocol = data || null;
-      } else {
-        const { data } = await supabaseServer
-          .from("protocols")
-          .select("id, name, version, protocol_summaries, sections, section_embeddings")
-          .eq("is_active", true)
-          .limit(1)
-          .maybeSingle();
-        protocol = data || null;
-      }
+    if (protocol_id) {
+      const { data } = await supabaseServer
+        .from("protocols")
+        .select(
+          "id, name, version, protocol_summaries, sections, section_embeddings"
+        )
+        .eq("id", protocol_id)
+        .maybeSingle();
+      protocol = data || null;
+    } else {
+      const { data } = await supabaseServer
+        .from("protocols")
+        .select(
+          "id, name, version, protocol_summaries, sections, section_embeddings"
+        )
+        .eq("is_active", true)
+        .limit(1)
+        .maybeSingle();
+      protocol = data || null;
+    }
 
-      if (protocol) {
-        protocolSummary = `${protocol.name || ""} ${protocol.version || ""}\n\n${protocol.protocol_summaries || ""}`.trim();
-      }
-    } catch {}
+    if (protocol) {
+      protocolSummary = `${protocol.name || ""} ${
+        protocol.version || ""
+      }\n\n${protocol.protocol_summaries || ""}`.trim();
+    }
 
     /* -------------------- Facility Context -------------------- */
     let investigationsContext = "";
-    const lvl = (level_of_facility || "").toLowerCase();
+    const lvl = level_of_facility.toLowerCase();
 
     if (lvl.includes("without a doctor")) {
       investigationsContext = `At CHPS compounds, Health Centers, and clinics (without a doctor)...`;
@@ -324,64 +372,64 @@ export async function POST(req) {
       investigationsContext = `At Regional or Tertiary Hospitals (Specialist level)...`;
     }
 
-    /* -------------------- Build Query Embedding -------------------- */
+    /* -------------------- Query Embedding -------------------- */
     const queryText = `CKD Stage ${stage ?? "N/A"}, eGFR ${egfr}, Diabetes ${
       diabetes ? "Yes" : "No"
     }, Hypertension ${hypertension ? "Yes" : "No"}. Facility: ${level_of_facility}`;
 
     const queryEmbedding = await embeddingFromText(queryText);
     if (!queryEmbedding) {
-      return NextResponse.json({ error: "Failed to generate query embedding" }, { status: 500 });
+      return NextResponse.json(
+        { error: "Failed to generate query embedding" },
+        { status: 500 }
+      );
     }
 
-    /* -------------------- Match Protocol Chunks -------------------- */
+    /* -------------------- Match Chunks -------------------- */
     let chunks = [];
-
     try {
-      const rpcResp = await supabaseServer.rpc("match_protocol_chunks", {
+      const rpc = await supabaseServer.rpc("match_protocol_chunks", {
         query_embedding: queryEmbedding,
         match_threshold: 0.72,
         match_count: DEFAULT_RANK_COUNT,
       });
 
-      if (Array.isArray(rpcResp?.data)) {
-        chunks = rpcResp.data;
-      }
-    } catch (err) {
-      console.warn("match_protocol_chunks RPC error:", err);
-    }
+      if (Array.isArray(rpc?.data)) chunks = rpc.data;
+    } catch {}
 
-    /* -------------------- Fallback to Direct Fetch -------------------- */
+    // fallback
     if (!Array.isArray(chunks) || chunks.length === 0) {
-      const fallback = await supabaseServer
+      const fb = await supabaseServer
         .from("protocol_chunks")
-        .select("id, protocol_id, chunk_index, content, embedding, section_title, page_number")
+        .select(
+          "id, protocol_id, chunk_index, content, embedding, section_title, page_number"
+        )
         .eq("protocol_id", protocol?.id || 0)
         .limit(50);
 
-      if (!fallback.error && Array.isArray(fallback.data)) {
-        chunks = fallback.data;
-      }
+      if (!fb.error && fb.data) chunks = fb.data;
     }
 
     /* -------------------- Normalize -------------------- */
     let retrievedSections = normalizeChunks(chunks);
 
-    /* -------------------- Section Embeddings -------------------- */
-    let protoSections = protocol ? await loadProtocolSections(protocol.id) : [];
+    /* -------------------- Load + Fix Section Embeddings -------------------- */
+    let protoSections = protocol
+      ? await loadProtocolSections(protocol.id)
+      : [];
 
-    const missingEmbeddings =
-      protoSections.length > 0 && protoSections.some((s) => !s.embedding);
-
-    if (missingEmbeddings) {
+    const missing = protoSections.some((s) => !s.embedding);
+    if (missing) {
       const embeddings = await Promise.all(
         protoSections.map((s) => embeddingFromText(s.title))
       );
+
       const updated = protoSections.map((s, i) => ({
         title: s.title,
         embedding: embeddings[i] || null,
       }));
-      persistSectionEmbeddings(protocol.id, updated);
+
+      await persistSectionEmbeddings(protocol.id, updated);
       protoSections = updated;
     }
 
@@ -392,41 +440,35 @@ export async function POST(req) {
       protoSections
     );
 
-    /* -------------------- Construct LLM Context -------------------- */
-    const trimmedContext = joinRetrievedContext(retrievedSections, 2500);
+    /* -------------------- Build Context -------------------- */
+    const contextText = joinRetrievedContext(retrievedSections, 2500);
+
+    /* -------------------- Prompts -------------------- */
     const model = chooseModel();
 
-    /* -------------------- System Prompt (Corrected) -------------------- */
-    const systemContent = `
+    const systemPrompt = `
 You are a CKD clinical decision-support assistant for Ghana’s Ministry of Health.
+Your output MUST BE STRICT JSON ONLY.
 
-Your output MUST BE STRICT JSON ONLY — no Markdown, no commentary.
-
-When citing protocol evidence:
-- Use ONLY sections supplied in the "Retrieved Context".
-- For each evidence item, include exactly:
-
-{
-  "section_title": "...",
-  "page_number": <number or null>,
-  "excerpt": "...",
-  "link": "<APP_URL>/viewer?p=<page_number>"
-}
-
-Where:
-- APP_URL = "${APP_URL}"
-- If page_number is null or missing, set link = null.
+Citation rules:
+- Use ONLY retrieved context.
 - NEVER invent page numbers.
-- NEVER fabricate citations.
-`;
+- Evidence items must include:
+  {
+    "section_title": "...",
+    "page_number": <num or null>,
+    "excerpt": "...",
+    "link": "<APP_URL>/viewer?p=<page_number>" | null
+  }
+APP_URL = "${APP_URL}".
+    `.trim();
 
-    /* -------------------- User Prompt (Citation instructions added) -------------------- */
     const userPrompt = `
 Local Protocol Summary:
-${protocolSummary || "No local protocol provided."}
+${protocolSummary || "None"}
 
 Retrieved Context:
-${trimmedContext}
+${contextText}
 
 Facility Context:
 ${investigationsContext}
@@ -439,93 +481,81 @@ Patient:
 - Hypertension: ${hypertension ? "Yes" : "No"}
 - Facility Level: ${level_of_facility}
 
-IMPORTANT — When constructing evidence entries:
-- Use the REAL page_number from the retrieved context.
-- Create link = "${APP_URL}/viewer?p=" + page_number.
-- If page_number is null, set link = null.
-
-Return STRICT JSON in this structure:
-
+Return STRICT JSON:
 {
-  "recommendation": "string",
-  "suggested_investigations": ["..."],
-  "suggested_treatment": ["..."],
-  "rationale": "string",
+  "recommendation": "",
+  "suggested_investigations": [],
+  "suggested_treatment": [],
+  "rationale": "",
   "evidence": [
-    {
-      "section_title": "...",
-      "page_number": <num or null>,
-      "excerpt": "...",
-      "link": "string or null"
-    }
+     {
+       "section_title": "",
+       "page_number": <num|null>,
+       "excerpt": "",
+       "link": "<APP_URL>/viewer?p=X" | null
+     }
   ]
 }
-`;
+    `.trim();
 
-    /* -------------------- Call OpenAI -------------------- */
+    /* -------------------- OpenAI Call -------------------- */
     const aiResp = await openai.responses.create({
       model,
       input: [
-        { role: "system", content: systemContent },
+        { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
       ],
       temperature: 0.15,
       max_output_tokens: 900,
     });
 
-    /* -------------------- Extract Raw JSON -------------------- */
+    /* -------------------- Parse JSON -------------------- */
     let rawText = "";
-
-    if (aiResp.output && Array.isArray(aiResp.output)) {
+    if (Array.isArray(aiResp.output)) {
       rawText = aiResp.output
         .map((o) => {
           if (typeof o === "string") return o;
-          if (Array.isArray(o.content)) {
+          if (Array.isArray(o.content))
             return o.content.map((c) => c?.text || "").join("");
-          }
           if (o.content?.text) return o.content.text;
           return "";
         })
         .join("\n")
         .trim();
     }
-
     rawText ||= aiResp.output_text ?? "";
 
-    /* -------------------- Ensure JSON -------------------- */
-    let parsed = extractJSONFromText(rawText);
+    let parsed = extractJSONFromText(rawText) || {
+      recommendation: "No recommendation.",
+      suggested_investigations: [],
+      suggested_treatment: [],
+      rationale: "",
+      evidence: [],
+    };
 
-    if (!parsed) {
-      parsed = {
-        recommendation: "No recommendation produced.",
-        suggested_investigations: [],
-        suggested_treatment: [],
-        rationale: "",
-        evidence: [],
-      };
-    }
-
-    parsed.recommendation ||= "No specific recommendation.";
-    parsed.suggested_investigations = Array.isArray(parsed.suggested_investigations)
-      ? parsed.suggested_investigations.filter(Boolean)
+    parsed.suggested_investigations =
+      parsed.suggested_investigations?.filter(Boolean) || [];
+    parsed.suggested_treatment =
+      parsed.suggested_treatment?.filter(Boolean) || [];
+    parsed.evidence = Array.isArray(parsed.evidence)
+      ? parsed.evidence
       : [];
-    parsed.suggested_treatment = Array.isArray(parsed.suggested_treatment)
-      ? parsed.suggested_treatment.filter(Boolean)
-      : [];
-    parsed.rationale ||= "";
-    parsed.evidence = Array.isArray(parsed.evidence) ? parsed.evidence : [];
 
-    /* -------------------- Cache -------------------- */
+    /* -------------------- Cache Hash -------------------- */
     const promptKey = [
-      protocolSummary || "",
+      protocolSummary,
       retrievedSections
-        .map((s) => `${s.section_title} (p.${s.page_number}) - ${s.content_excerpt}`)
+        .map(
+          (s) =>
+            `${s.section_title} (p.${s.page_number}) - ${s.content_excerpt}`
+        )
         .join("\n"),
       queryText,
     ].join("\n\n");
 
     const promptHash = sha256Hex(promptKey);
 
+    /* -------------------- Cache Storage -------------------- */
     try {
       await supabaseServer.from("ai_cache").insert([
         {
@@ -544,18 +574,23 @@ Return STRICT JSON in this structure:
           user_id: user.id,
           query_text: userPrompt.slice(0, 2000),
           response: rawText,
-          citations: retrievedSections.map((r) => r.section_title).slice(0, 10),
+          citations: retrievedSections
+            .map((r) => r.section_title)
+            .slice(0, 10),
           model_used: model,
           prompt_hash: promptHash,
           top_sections: retrievedSections
-            .map((r) => ({ title: r.section_title, score: r._section_score || 0 }))
+            .map((r) => ({
+              title: r.section_title,
+              score: r._section_score || 0,
+            }))
             .slice(0, 6),
           created_at: new Date().toISOString(),
         },
       ]);
     } catch {}
 
-    /* -------------------- Final Response -------------------- */
+    /* -------------------- Final Return -------------------- */
     return NextResponse.json({
       success: true,
       data: {
@@ -566,7 +601,7 @@ Return STRICT JSON in this structure:
   } catch (err) {
     console.error("AI recommendation route error:", err);
     return NextResponse.json(
-      { error: err?.message || "Unexpected AI recommendation error" },
+      { error: err?.message || "Unexpected error" },
       { status: 500 }
     );
   }

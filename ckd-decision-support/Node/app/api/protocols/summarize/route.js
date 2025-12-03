@@ -11,7 +11,7 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE =
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
 
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL;  // REQUIRED FOR EMBEDDED VIEWER LINKS
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL;
 if (!APP_URL) {
   console.error("❌ NEXT_PUBLIC_APP_URL missing — viewer links cannot be generated.");
 }
@@ -37,7 +37,6 @@ function sanitizeBaseName(name, maxLen = 160) {
 
 /* -------------------- Viewer Link Generator -------------------- */
 function makePageLink(page) {
-  // Final absolute URL to your viewer
   return `${APP_URL}/viewer?page=${page}`;
 }
 
@@ -136,6 +135,33 @@ async function parallelLimit(items, limit, fn) {
   return Promise.all(results);
 }
 
+/* -------------------- Python API with Retry -------------------- */
+async function callPythonExtractor(buf, safeName, retries = 2) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const pyForm = new FormData();
+      pyForm.append("file", new Blob([buf]), safeName);
+
+      const pyRes = await fetchWithTimeout(`${PY_API_URL}/extract`, {
+        method: "POST",
+        body: pyForm,
+      });
+
+      if (pyRes.ok) {
+        return await pyRes.json();
+      }
+      
+      if (attempt === retries) {
+        throw new Error(await pyRes.text());
+      }
+    } catch (err) {
+      if (attempt === retries) throw err;
+      console.warn(`Python extractor attempt ${attempt + 1} failed, retrying...`);
+      await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+    }
+  }
+}
+
 /* -------------------- Sectionize -------------------- */
 async function llmSectionize(text) {
   const snippet = text.slice(0, 30000);
@@ -176,6 +202,9 @@ ${snippet}
 
 /* -------------------- Summaries -------------------- */
 async function generateSummary(text, filename, isLimited) {
+  // ✅ FIX: Define trimmed variable
+  const trimmed = text.slice(0, 30000);
+  
   let prompt;
   if (isLimited) {
     prompt = `
@@ -202,7 +231,7 @@ CLINICAL SAFETY & HALLUCINATION RULES
 - **Never invent page numbers.**
 - **Never fabricate numeric values.**
 - If a required value is not present in the text, write:
-  “*The protocol text does not specify this value.*”
+  "*The protocol text does not specify this value.*"
 - If the text is incomplete or limited, summarize based on **only what is provided**
   and supplement using **general CKD guideline principles** *without making up 
   document-specific details*.
@@ -223,6 +252,14 @@ If the extracted text is empty, truncated, or clearly insufficient:
 
 --------------------------------------
 PROVIDED TEXT (may be partial, full, empty, or truncated):
+TEXT:
+${trimmed}`;
+  } else {
+    prompt = `
+You are summarizing the CKD clinical protocol titled "${filename}".
+
+Produce a comprehensive clinical summary preserving all numeric values and citations.
+
 TEXT:
 ${trimmed}`;
   }
@@ -262,25 +299,18 @@ export async function POST(req) {
     const safeBase = sanitizeBaseName(originalName);
     const safeName = `${safeBase}.pdf`;
 
-    const buf = Buffer.from(await file.arrayBuffer());
-
-    /* -------- 1. Python extractor -------- */
-    const pyForm = new FormData();
-    pyForm.append("file", new Blob([buf]), safeName);
-
-    const pyRes = await fetchWithTimeout(`${PY_API_URL}/extract`, {
-      method: "POST",
-      body: pyForm,
-    });
-
-    if (!pyRes.ok) {
-      return NextResponse.json({
-        error: "Extractor failed",
-        detail: await pyRes.text(),
-      }, { status: 500 });
+    // ✅ OPTIMIZATION: Add file size check
+    const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+    if (file.size > MAX_FILE_SIZE) {
+      return NextResponse.json({ 
+        error: `File too large. Maximum size is ${MAX_FILE_SIZE / 1024 / 1024}MB` 
+      }, { status: 400 });
     }
 
-    const { full_text, pages, page_count, ocr_used } = await pyRes.json();
+    const buf = Buffer.from(await file.arrayBuffer());
+
+    /* -------- 1. Python extractor with retry -------- */
+    const { full_text, pages, page_count, ocr_used } = await callPythonExtractor(buf, safeName);
 
     /* -------- 2. Build page offset table -------- */
     let running = 0;
@@ -335,6 +365,7 @@ export async function POST(req) {
       });
       off += CHUNK_SIZE;
     }
+
     /* -------- 6. Chunk summaries (parallel) with embedded viewer links -------- */
     const CHUNK_SUMMARY_CONCURRENCY = 6;
 
@@ -382,8 +413,6 @@ ${c.text}
           const j = await r.json().catch(() => ({}));
           let text = j.output?.[0]?.content?.[0]?.text?.trim() || "";
 
-          // Normalize any loose citation variants to our markdown link format anchored to the chunk page.
-          // Eg: (p.12) -> [↗ p.12](URL) or [p.12] -> [↗ p.12](URL)
           const pageLink = makePageLink(c.page_number);
           text = text
             .replace(/\(p\.(\d{1,4})\)/g, () => `[↗ p.${c.page_number}](${pageLink})`)
@@ -416,7 +445,7 @@ ${c.text}
     if (!uploadErr) {
       const { data: signed } = await supabase.storage
         .from("protocols")
-        .createSignedUrl(storageKey, 60 * 60); // 1 hour
+        .createSignedUrl(storageKey, 60 * 60);
       fileUrl = signed?.signedUrl || null;
     } else {
       console.warn("Supabase upload error:", uploadErr);
@@ -442,7 +471,7 @@ ${c.text}
         is_active: true,
         embedding: protocolEmbedding,
         updated_at: new Date().toISOString(),
-        sections, // includes page_number
+        sections,
         section_embeddings: null,
         file_url: fileUrl,
         storage_key: storageKey,
@@ -475,11 +504,6 @@ ${c.text}
       }
     );
 
-    await supabase
-      .from("protocols")
-      .update({ section_embeddings: sectionEmbeddings })
-      .eq("id", protocolId);
-
     /* -------- 12. Chunk embeddings & insert (parallel) -------- */
     const embeddedChunks = await parallelLimit(
       chunks.map((c, idx) => ({ ...c, idx })),
@@ -497,7 +521,6 @@ ${c.text}
       }
     );
 
-    // Bulk insert chunks
     const chunkRows = embeddedChunks.map((c) => ({
       protocol_id: protocolId,
       chunk_index: c.chunk_index,
@@ -513,9 +536,8 @@ ${c.text}
     }
 
     /* -------- 13. Citation metadata extraction (embedded links) -------- */
-    // Find all markdown viewer links in chunk summaries: [↗ p.X](URL)
     const citationRegex = /\[↗\s?p\.(\d{1,4})\]\((https?:\/\/[^\s)]+)\)/g;
-    const citations = []; // { page, url, chunk_index, snippet }
+    const citations = [];
     chunkSummaries.forEach((summ, idx) => {
       let m;
       while ((m = citationRegex.exec(summ)) !== null) {
@@ -526,32 +548,36 @@ ${c.text}
       }
     });
 
-    // Save citations on protocols row
-    await supabase
-      .from("protocols")
-      .update({ citations })
-      .eq("id", protocolId);
+    /* -------- 14. ✅ OPTIMIZATION: Combine database updates -------- */
+    await Promise.all([
+      // Update protocol with section_embeddings and citations in one call
+      supabase.from("protocols").update({ 
+        section_embeddings: sectionEmbeddings,
+        citations 
+      }).eq("id", protocolId),
+      
+      // Insert summary
+      supabase.from("protocol_summaries").insert({
+        protocol_id: protocolId,
+        filename: safeName,
+        summary: finalSummary,
+        raw_text_snippet: full_text.slice(0, 5000),
+        chunk_summaries: chunkSummaries,
+        num_pages: page_count,
+        ocr_used,
+        uploaded_at: new Date().toISOString(),
+        content_hash: textHash,
+      }),
+      
+      // Insert cache
+      supabase.from("protocol_cache").insert({
+        hash: textHash,
+        summary: finalSummary,
+        created_at: new Date().toISOString(),
+      })
+    ]);
 
-    /* -------- 14. Summary & cache tables -------- */
-    await supabase.from("protocol_summaries").insert({
-      protocol_id: protocolId,
-      filename: safeName,
-      summary: finalSummary,
-      raw_text_snippet: full_text.slice(0, 5000),
-      chunk_summaries: chunkSummaries,
-      num_pages: page_count,
-      ocr_used,
-      uploaded_at: new Date().toISOString(),
-      content_hash: textHash,
-    });
-
-    await supabase.from("protocol_cache").insert({
-      hash: textHash,
-      summary: finalSummary,
-      created_at: new Date().toISOString(),
-    });
-
-    /* -------- DONE: return response (with viewer-ready links) -------- */
+    /* -------- DONE: return response -------- */
     return NextResponse.json({
       ok: true,
       protocolId,
@@ -573,31 +599,95 @@ export async function DELETE(req) {
   try {
     const body = await req.json().catch(() => ({}));
     const protocolId = body?.protocolId;
+    
     if (!protocolId) {
       return NextResponse.json({ error: "protocolId required" }, { status: 400 });
     }
 
-    const { data: proto } = await supabase
+    // 1. Get protocol details
+    const { data: proto, error: fetchError } = await supabase
       .from("protocols")
       .select("id, storage_key")
       .eq("id", protocolId)
       .maybeSingle();
 
+    if (fetchError) {
+      console.error("Fetch protocol error:", fetchError);
+      return NextResponse.json({ 
+        error: "Error fetching protocol", 
+        details: fetchError.message 
+      }, { status: 500 });
+    }
+
     if (!proto) {
       return NextResponse.json({ error: "Protocol not found" }, { status: 404 });
     }
 
+    // 2. Delete from storage (if exists)
     if (proto.storage_key) {
-      await supabase.storage.from("protocols").remove([proto.storage_key]);
+      const { error: storageError } = await supabase.storage
+        .from("protocols")
+        .remove([proto.storage_key]);
+      
+      if (storageError) {
+        console.error("Storage delete error:", storageError);
+      }
     }
 
-    await supabase.from("protocol_chunks").delete().eq("protocol_id", protocolId);
-    await supabase.from("protocol_summaries").delete().eq("protocol_id", protocolId);
-    await supabase.from("protocols").delete().eq("id", protocolId);
+    // 3. ✅ OPTIMIZATION: Delete child records in parallel (they don't depend on each other)
+    const [metricsResult, chunksResult, summariesResult] = await Promise.all([
+      supabase.from("ai_metrics").delete().eq("protocol_id", protocolId),
+      supabase.from("protocol_chunks").delete().eq("protocol_id", protocolId),
+      supabase.from("protocol_summaries").delete().eq("protocol_id", protocolId)
+    ]);
 
+    // Check for errors
+    if (metricsResult.error) {
+      console.error("Delete metrics error:", metricsResult.error);
+      return NextResponse.json({ 
+        error: "Failed to delete AI metrics", 
+        details: metricsResult.error.message 
+      }, { status: 500 });
+    }
+
+    if (chunksResult.error) {
+      console.error("Delete chunks error:", chunksResult.error);
+      return NextResponse.json({ 
+        error: "Failed to delete protocol chunks", 
+        details: chunksResult.error.message 
+      }, { status: 500 });
+    }
+
+    if (summariesResult.error) {
+      console.error("Delete summaries error:", summariesResult.error);
+      return NextResponse.json({ 
+        error: "Failed to delete protocol summaries", 
+        details: summariesResult.error.message 
+      }, { status: 500 });
+    }
+
+    // 4. Finally delete the main protocol record
+    const { error: protocolError } = await supabase
+      .from("protocols")
+      .delete()
+      .eq("id", protocolId);
+
+    if (protocolError) {
+      console.error("Delete protocol error:", protocolError);
+      return NextResponse.json({ 
+        error: "Failed to delete protocol", 
+        details: protocolError.message 
+      }, { status: 500 });
+    }
+
+    console.log(`✅ Successfully deleted protocol ${protocolId}`);
     return NextResponse.json({ ok: true, protocolId });
+    
   } catch (err) {
     console.error("Delete error:", err);
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    return NextResponse.json({ 
+      error: "Delete operation failed", 
+      details: String(err) 
+    }, { status: 500 });
   }
 }
