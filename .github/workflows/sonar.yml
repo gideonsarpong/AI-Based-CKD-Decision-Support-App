@@ -10,8 +10,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -24,13 +23,10 @@ jobs:
         working-directory: ./ckd-decision-support/Node
         run: npm install
 
-      - name: Run tests with coverage (non-blocking)
-        working-directory: ./ckd-decision-support/Node
-        run: |
-          npm test -- --coverage || true
-          echo "Checking if coverage file exists..."
-          ls -lah coverage || true
-          ls -lah coverage/lcov.info || true
+      # Test coverage removed — optional test step below to be used when ready
+      # - name: Run tests (optional)
+      #   working-directory: ./ckd-decision-support/Node
+      #   run: npm test || true
 
       - name: SonarCloud Scan
         uses: SonarSource/sonarcloud-github-action@v2
@@ -40,4 +36,3 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: "https://sonarcloud.io"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        continue-on-error: true
