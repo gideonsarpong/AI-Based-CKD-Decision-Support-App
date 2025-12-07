@@ -20,11 +20,11 @@ jobs:
           node-version: 18
 
       - name: Install dependencies
-        working-directory: ./Node
+        working-directory: ./ckd-decision-support/Node
         run: npm install
 
       - name: Run tests with coverage (non-blocking)
-        working-directory: ./Node
+        working-directory: ./ckd-decision-support/Node
         run: npm test -- --coverage || true
 
       - name: SonarCloud Scan
