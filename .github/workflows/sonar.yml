@@ -10,7 +10,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -25,7 +26,11 @@ jobs:
 
       - name: Run tests with coverage (non-blocking)
         working-directory: ./ckd-decision-support/Node
-        run: npm test -- --coverage || true
+        run: |
+          npm test -- --coverage || true
+          echo "Checking if coverage file exists..."
+          ls -lah coverage || true
+          ls -lah coverage/lcov.info || true
 
       - name: SonarCloud Scan
         uses: SonarSource/sonarcloud-github-action@v2
