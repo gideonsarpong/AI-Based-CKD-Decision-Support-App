@@ -23,11 +23,6 @@ jobs:
         working-directory: ./ckd-decision-support/Node
         run: npm install
 
-      # Test coverage removed — optional test step below to be used when ready
-      # - name: Run tests (optional)
-      #   working-directory: ./ckd-decision-support/Node
-      #   run: npm test || true
-
       - name: SonarCloud Scan
         uses: SonarSource/sonarcloud-github-action@v2
         with:
