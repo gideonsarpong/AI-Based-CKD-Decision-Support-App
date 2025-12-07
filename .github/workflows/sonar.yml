@@ -2,8 +2,7 @@ name: SonarCloud Scan
 
 on:
   push:
-    branches:
-      - main
+    branches: [ "main" ]
   pull_request:
 
 jobs:
@@ -21,15 +20,17 @@ jobs:
           node-version: 18
 
       - name: Install dependencies
+        working-directory: ./Node
         run: npm install
 
       - name: Run tests with coverage (non-blocking)
+        working-directory: ./Node
         run: npm test -- --coverage || true
 
       - name: SonarCloud Scan
         uses: SonarSource/sonarcloud-github-action@v2
         with:
-          projectBaseDir: ./
+          projectBaseDir: ./Node
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: "https://sonarcloud.io"
